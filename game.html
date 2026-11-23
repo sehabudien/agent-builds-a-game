@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ghost Coin Dash — one prompt, one game</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #12081f; overflow: hidden; }
+  canvas { display: block; margin: 0 auto; }
+</style>
+</head>
+<body>
+<canvas id="game" width="1280" height="720"></canvas>
+<script>
+'use strict';
+// Ghost Coin Dash — built from one prompt:
+// "Build me a tiny browser game where a ghost collects coins and dodges spikes —
+//  arrow keys to move, 60 seconds, score in the corner."
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+const W = 1280, H = 720, GROUND = 640;
+
+const ghost = { x: 120, y: 300, vx: 0, vy: 0, r: 34, lives: 3, invuln: 0, face: 1 };
+const keys = {};
+let score = 0, timeLeft = 60, state = 'title', elapsed = 0;
+let collected = 0, hits = 0;
+
+// Coins: magenta coins with a white star, laid out along a route the ghost can fly.
+const coinSpots = [
+  [240, 300], [360, 240], [480, 300], [600, 220], [720, 300], [840, 240],
+  [960, 300], [1080, 220], [1160, 330], [1080, 460], [960, 520], [840, 460],
+  [720, 540], [600, 470], [480, 540], [360, 470], [240, 540], [150, 430]
+];
+const coins = coinSpots.map(([x, y]) => ({ x, y, taken: false, bob: Math.random() * 6.28 }));
+
+// Spikes: red triangles on the ground, plus one slow patrol ball.
+const spikes = [
+  { x: 300, y: GROUND, w: 70, h: 46 }, { x: 520, y: GROUND, w: 70, h: 46 },
+  { x: 760, y: GROUND, w: 70, h: 46 }, { x: 1000, y: GROUND, w: 70, h: 46 }
+];
+const ball = { x: 640, y: 420, r: 26, vx: 1.6 };
+
+const stars = Array.from({ length: 90 }, () => ({
+  x: Math.random() * W, y: Math.random() * 420, r: Math.random() * 1.8 + 0.4,
+  tw: Math.random() * 6.28
+}));
+
+addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  if (e.key === ' ' && state === 'title') { state = 'play'; }
+  if (e.key === ' ' && (state === 'win' || state === 'over')) { reset(); state = 'play'; }
+  if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(e.key.toLowerCase())) e.preventDefault();
+});
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+function reset() {
+  ghost.x = 120; ghost.y = 300; ghost.vx = 0; ghost.vy = 0; ghost.lives = 3; ghost.invuln = 0;
+  score = 0; timeLeft = 60; elapsed = 0; collected = 0; hits = 0;
+  coins.forEach(c => { c.taken = false; });
+  ball.x = 640; ball.vx = 1.6;
+}
+
+function circleHit(ax, ay, ar, bx, by, br) {
+  const dx = ax - bx, dy = ay - by;
+  return dx * dx + dy * dy < (ar + br) * (ar + br);
+}
+
+function update(dt) {
+  if (state !== 'play') return;
+  elapsed += dt;
+  timeLeft = Math.max(0, 60 - elapsed);
+  if (timeLeft <= 0) { state = 'win'; return; }
+
+  const ACC = 1500, MAXV = 340, FRICT = 0.86;
+  if (keys['arrowleft'] || keys['a']) { ghost.vx -= ACC * dt; ghost.face = -1; }
+  if (keys['arrowright'] || keys['d']) { ghost.vx += ACC * dt; ghost.face = 1; }
+  if (keys['arrowup'] || keys['w']) ghost.vy -= ACC * dt;
+  if (keys['arrowdown'] || keys['s']) ghost.vy += ACC * dt;
+  ghost.vx *= FRICT; ghost.vy *= FRICT;
+  ghost.vx = Math.max(-MAXV, Math.min(MAXV, ghost.vx));
+  ghost.vy = Math.max(-MAXV, Math.min(MAXV, ghost.vy));
+  ghost.x += ghost.vx * dt;
+  ghost.y += ghost.vy * dt;
+  ghost.x = Math.max(ghost.r, Math.min(W - ghost.r, ghost.x));
+  ghost.y = Math.max(ghost.r + 40, Math.min(GROUND - ghost.r + 20, ghost.y));
+  if (ghost.invuln > 0) ghost.invuln -= dt;
+
+  // Patrol ball bounces left-right.
+  ball.x += ball.vx * 2.2;
+  if (ball.x < 420 || ball.x > 880) ball.vx *= -1;
+
+  // Coins.
+  for (const c of coins) {
+    if (!c.taken && circleHit(ghost.x, ghost.y, ghost.r - 6, c.x, c.y + Math.sin(elapsed * 2 + c.bob) * 6, 20)) {
+      c.taken = true; score += 10; collected++;
+    }
+  }
+  if (collected === coins.length) { state = 'win'; return; }
+
+  // Spike hits.
+  const hurt = () => {
+    if (ghost.invuln > 0) return;
+    ghost.lives--; hits++; ghost.invuln = 1.6;
+    ghost.x = 120; ghost.y = 300; ghost.vx = 0; ghost.vy = 0;
+    if (ghost.lives <= 0) state = 'over';
+  };
+  for (const s of spikes) {
+    const tipX = s.x + s.w / 2, tipY = s.y - s.h;
+    if (ghost.x > s.x - 10 && ghost.x < s.x + s.w + 10 && ghost.y + ghost.r - 8 > tipY + 14) hurt();
+  }
+  if (circleHit(ghost.x, ghost.y, ghost.r - 8, ball.x, ball.y, ball.r)) hurt();
+}
+
+function drawGhost(x, y, r, blink) {
+  ctx.save();
+  ctx.translate(x, y);
+  // Body: white ghost with a wavy hem, thick black outline.
+  ctx.beginPath();
+  ctx.moveTo(-r, r * 0.9);
+  ctx.lineTo(-r, -r * 0.2);
+  ctx.arc(0, -r * 0.2, r, Math.PI, 0);
+  ctx.lineTo(r, r * 0.9);
+  const waves = 4, step = (2 * r) / waves;
+  for (let i = 0; i < waves; i++) {
+    const x0 = r - i * step, x1 = r - (i + 1) * step;
+    ctx.quadraticCurveTo((x0 + x1) / 2, r * 0.9 + (i % 2 === 0 ? 14 : -6), x1, r * 0.9);
+  }
+  ctx.closePath();
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.lineWidth = 5; ctx.strokeStyle = '#111';
+  ctx.stroke();
+  // Sparkle eyes.
+  const eye = (ex) => {
+    ctx.beginPath();
+    ctx.moveTo(ex, -r * 0.42 - 12);
+    ctx.quadraticCurveTo(ex + 4, -r * 0.42, ex + 12, -r * 0.42);
+    ctx.quadraticCurveTo(ex + 4, -r * 0.42, ex, -r * 0.42 + 12);
+    ctx.quadraticCurveTo(ex - 4, -r * 0.42, ex - 12, -r * 0.42);
+    ctx.quadraticCurveTo(ex - 4, -r * 0.42, ex, -r * 0.42 - 12);
+    ctx.fillStyle = '#111'; ctx.fill();
+  };
+  eye(-r * 0.38); eye(r * 0.38);
+  // Little round hand holding a magenta coin.
+  ctx.beginPath(); ctx.arc(r * 0.72, r * 0.42, 11, 0, 6.29); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = '#111'; ctx.stroke();
+  ctx.beginPath(); ctx.arc(r * 0.72 + 16, r * 0.42 + 2, 15, 0, 6.29);
+  ctx.fillStyle = '#e6007e'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  const cx = r * 0.72 + 16, cy = r * 0.42 + 2;
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + i * 2 * Math.PI / 5, a2 = a + Math.PI / 5;
+    ctx.lineTo(cx + Math.cos(a) * 8, cy + Math.sin(a) * 8);
+    ctx.lineTo(cx + Math.cos(a2) * 3.5, cy + Math.sin(a2) * 3.5);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function drawCoin(x, y, t) {
+  const bob = Math.sin(t * 2) * 5;
+  ctx.save();
+  ctx.translate(x, y + bob);
+  ctx.beginPath(); ctx.arc(0, 0, 20, 0, 6.29);
+  ctx.fillStyle = '#e6007e'; ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = '#ff7fc0'; ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + i * 2 * Math.PI / 5, a2 = a + Math.PI / 5;
+    ctx.lineTo(Math.cos(a) * 9, Math.sin(a) * 9);
+    ctx.lineTo(Math.cos(a2) * 4, Math.sin(a2) * 4);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function draw() {
+  // Night sky.
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#1b0b33'); sky.addColorStop(0.6, '#4b1d6b'); sky.addColorStop(1, '#12081f');
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+  const t = performance.now() / 1000;
+  for (const s of stars) {
+    ctx.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(t + s.tw));
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.29); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // Moon.
+  ctx.beginPath(); ctx.arc(1120, 90, 46, 0, 6.29);
+  ctx.fillStyle = '#ffe9a8'; ctx.fill();
+  ctx.fillStyle = '#f5d67a';
+  ctx.beginPath(); ctx.arc(1105, 78, 9, 0, 6.29); ctx.arc(1132, 100, 7, 0, 6.29); ctx.fill();
+
+  // Ground.
+  ctx.fillStyle = '#241335'; ctx.fillRect(0, GROUND, W, H - GROUND);
+  ctx.fillStyle = '#3a1f52'; ctx.fillRect(0, GROUND, W, 6);
+
+  // Coins.
+  for (const c of coins) if (!c.taken) drawCoin(c.x, c.y, t + c.bob);
+
+  // Ground spikes.
+  for (const s of spikes) {
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y); ctx.lineTo(s.x + s.w / 2, s.y - s.h); ctx.lineTo(s.x + s.w, s.y);
+    ctx.closePath(); ctx.fillStyle = '#e63b2e'; ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = '#7d130c'; ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(s.x + s.w * 0.25, s.y); ctx.lineTo(s.x + s.w * 0.5, s.y - s.h * 0.55); ctx.lineTo(s.x + s.w * 0.75, s.y);
+    ctx.closePath(); ctx.fillStyle = '#ff6b5e'; ctx.fill();
+  }
+  // Patrol spike ball.
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, 6.29);
+  ctx.fillStyle = '#e63b2e'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#7d130c'; ctx.stroke();
+  for (let i = 0; i < 8; i++) {
+    const a = i * Math.PI / 4;
+    ctx.beginPath();
+    ctx.moveTo(ball.x + Math.cos(a) * ball.r, ball.y + Math.sin(a) * ball.r);
+    ctx.lineTo(ball.x + Math.cos(a) * (ball.r + 12), ball.y + Math.sin(a) * (ball.r + 12));
+    ctx.lineTo(ball.x + Math.cos(a + 0.35) * ball.r, ball.y + Math.sin(a + 0.35) * ball.r);
+    ctx.closePath(); ctx.fillStyle = '#e63b2e'; ctx.fill();
+  }
+
+  // Ghost (blink while invulnerable).
+  if (!(ghost.invuln > 0 && Math.floor(t * 10) % 2 === 0)) drawGhost(ghost.x, ghost.y, ghost.r);
+
+  // HUD.
+  ctx.fillStyle = 'rgba(10,4,20,0.55)'; ctx.fillRect(0, 0, W, 58);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 30px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('SCORE ' + score, 24, 40);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ff7fc0';
+  ctx.fillText('GHOST COIN DASH', W / 2, 40);
+  ctx.textAlign = 'right'; ctx.fillStyle = '#fff';
+  ctx.fillText('TIME ' + Math.ceil(timeLeft) + 's', W - 180, 40);
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath(); ctx.arc(W - 120 + i * 34, 29, 11, 0, 6.29);
+    ctx.fillStyle = i < ghost.lives ? '#ff4d6d' : '#3a1f52'; ctx.fill();
+  }
+
+  if (state === 'title') {
+    ctx.fillStyle = 'rgba(10,4,20,0.72)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    ctx.font = 'bold 64px sans-serif';
+    ctx.fillText('GHOST COIN DASH', W / 2, 250);
+    ctx.font = '28px sans-serif'; ctx.fillStyle = '#ff7fc0';
+    ctx.fillText('One prompt. One ghost. Every coin counts.', W / 2, 310);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 30px sans-serif';
+    if (Math.floor(t * 1.6) % 2 === 0) ctx.fillText('Press SPACE to play  •  Arrow keys to fly', W / 2, 420);
+    drawGhost(W / 2, 540, 52);
+  }
+  if (state === 'win') {
+    ctx.fillStyle = 'rgba(10,4,20,0.72)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#7dff9b'; ctx.textAlign = 'center'; ctx.font = 'bold 64px sans-serif';
+    ctx.fillText('YOU WIN!', W / 2, 300);
+    ctx.fillStyle = '#fff'; ctx.font = '30px sans-serif';
+    ctx.fillText('Score ' + score + '  •  Coins ' + collected + '/' + coins.length, W / 2, 360);
+    ctx.font = '24px sans-serif'; ctx.fillStyle = '#ff7fc0';
+    ctx.fillText('Built from one prompt — come build on make.fun', W / 2, 420);
+  }
+  if (state === 'over') {
+    ctx.fillStyle = 'rgba(10,4,20,0.72)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ff6b5e'; ctx.textAlign = 'center'; ctx.font = 'bold 64px sans-serif';
+    ctx.fillText('GAME OVER', W / 2, 300);
+    ctx.fillStyle = '#fff'; ctx.font = '30px sans-serif';
+    ctx.fillText('Score ' + score + ' — press SPACE to try again', W / 2, 360);
+  }
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
